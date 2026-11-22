@@ -43,6 +43,23 @@ python pull_trends.py --from-csv <folder> --geo US-MD
 
 Both routes write `trends.csv` with the columns `Week, Tag, Interest, Geo`.
 
+**Several states in one run.** Give `--geo` a comma-separated list:
+
+```
+python pull_trends.py --tags tags.txt --geo US-MD,US-VA,US-DC,US-NC,US-WV
+```
+
+For manual exports, make one subfolder per state named after its code
+(`exports/US-MD`, `exports/US-VA`, ...), download each state's CSVs into its
+folder, and run `python pull_trends.py --from-csv exports --geo US-MD,US-VA,US-DC,US-NC,US-WV`.
+If one state fails, the others are still written and the script names the
+one that is missing.
+
+Each state is scaled on its own, the way Google does it, so a 60 in
+Maryland is not a 60 in West Virginia. Compare momentum across states, not
+levels. In Power BI, add a slicer on `Trends[Geo]`; with no state selected,
+the measures average the states together with equal weight.
+
 Google scales each comparison to its own 0–100 range, so the anchor term
 (`kombucha` by default) has to be in every batch. The script rescales each
 batch until its anchor line matches the first batch's, which puts every tag

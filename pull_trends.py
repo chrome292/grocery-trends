@@ -8,6 +8,11 @@ Route A, automatic pull (needs: pip install pytrends pandas):
 Route B, convert CSVs downloaded from trends.google.com (needs: pip install pandas):
     python pull_trends.py --from-csv exports_folder --geo US-MD
 
+Several regions in one run (each is scaled on its own, as Google does):
+    python pull_trends.py --tags tags.txt --geo US-MD,US-VA,US-DC,US-NC,US-WV
+    python pull_trends.py --from-csv exports_folder --geo US-MD,US-VA,US-DC,US-NC,US-WV
+For the second form, put each region's CSVs in exports_folder/US-MD, exports_folder/US-VA, ...
+
 Why there is an anchor term
 ---------------------------
 Google compares at most 5 terms at once and scales each comparison to its
@@ -215,11 +220,30 @@ def to_long(wide: pd.DataFrame, geo: str) -> pd.DataFrame:
     return long[["Week", "Tag", "Interest", "Geo"]]
 
 
+def run_one(args, geo: str, folder: str | None) -> pd.DataFrame:
+    """Build the long table for one region."""
+    if folder:
+        frames = read_folder(folder, args.keep_partial)
+        anchor = args.anchor
+        if not anchor:
+            # Use the first tag from the tags file if there is one, else the first exported term.
+            anchor = read_tags(args.tags)[0] if Path(args.tags).exists() else frames[0].columns[0]
+    else:
+        tags = read_tags(args.tags)
+        anchor = args.anchor or tags[0]
+        frames = pull_live(tags, anchor, geo, args.timeframe, args.pause, args.keep_partial)
+    print(f"Anchor term: {anchor}")
+    return to_long(stitch(frames, anchor, args.weeks), geo)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Build trends.csv for the trend radar.")
     ap.add_argument("--tags", default="tags.txt", help="file of search terms, one per line")
-    ap.add_argument("--from-csv", metavar="FOLDER", help="convert CSVs downloaded from Google Trends")
-    ap.add_argument("--geo", default="US-MD", help="region code, e.g. US-MD, US-DC, US-VA, US-NC")
+    ap.add_argument("--from-csv", metavar="FOLDER",
+                    help="convert CSVs downloaded from Google Trends. With several regions, "
+                         "put each region's CSVs in a subfolder named after its code (FOLDER/US-MD, ...)")
+    ap.add_argument("--geo", default="US-MD",
+                    help="region code, or several separated by commas: US-MD,US-VA,US-DC,US-NC,US-WV")
     ap.add_argument("--anchor", help="term present in every batch (default: first line of the tags file)")
     ap.add_argument("--timeframe", default="today 5-y", help="live pull only; 5 years gives weekly points")
     ap.add_argument("--weeks", type=int, default=104, help="keep the latest N weeks (0 keeps all)")
@@ -229,22 +253,34 @@ def main() -> None:
     ap.add_argument("--out", default="trends.csv")
     args = ap.parse_args()
 
-    if args.from_csv:
-        frames = read_folder(args.from_csv, args.keep_partial)
-        anchor = args.anchor
-        if not anchor:
-            # Use the first tag from the tags file if there is one, else the first exported term.
-            anchor = read_tags(args.tags)[0] if Path(args.tags).exists() else frames[0].columns[0]
-    else:
-        tags = read_tags(args.tags)
-        anchor = args.anchor or tags[0]
-        frames = pull_live(tags, anchor, args.geo, args.timeframe, args.pause, args.keep_partial)
+    geos = [g.strip().upper() for g in args.geo.split(",") if g.strip()]
+    if not geos:
+        sys.exit("--geo is empty")
 
-    print(f"Anchor term: {anchor}")
-    result = to_long(stitch(frames, anchor, args.weeks), args.geo)
+    results, failed = [], []
+    for geo in geos:
+        folder = None
+        if args.from_csv:
+            folder = args.from_csv if len(geos) == 1 else str(Path(args.from_csv) / geo)
+        if len(geos) > 1:
+            print(f"\n=== {geo} ===")
+        try:
+            results.append(run_one(args, geo, folder))
+        except SystemExit as stop:
+            if len(geos) == 1:
+                raise
+            # One region failing should not throw away the others.
+            print(f"{geo} failed: {stop}")
+            failed.append(geo)
+
+    if not results:
+        sys.exit("No region produced any data.")
+    result = pd.concat(results, ignore_index=True)
     result.to_csv(args.out, index=False)
-    print(f"Wrote {args.out}: {result['Tag'].nunique()} tags, "
+    print(f"\nWrote {args.out}: {result['Geo'].nunique()} region(s), {result['Tag'].nunique()} tags, "
           f"{result['Week'].nunique()} weeks, {len(result):,} rows")
+    if failed:
+        sys.exit(f"These regions are missing from the file: {', '.join(failed)}")
 
 
 if __name__ == "__main__":
