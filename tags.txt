@@ -3,6 +3,18 @@
 # the Tag column in the Tags and Products tables.
 # The first term is the anchor: it goes into every batch so all the
 # batches can be put on one scale. Keep it first, or pass --anchor.
+#
+# Pick phrases people really type. A real pull across MD, VA, NC, DC and WV
+# in November 2026 found almost no searches for "electrolyte powder" and
+# "prebiotic soda", and very few for "collagen peptides", so those three
+# were swapped for broader or more common terms:
+#   electrolyte powder -> electrolytes
+#   collagen peptides  -> collagen
+#   prebiotic soda     -> olipop   (a brand name, used as a stand-in for the
+#                                   category; replace it with a brand you carry)
+# These replacements have not been pulled yet. Run check_trends.py after the
+# pull: any tag it stars still has too little volume.
+# The sample workbook keeps the old names; it is made-up data.
 kombucha
 mushroom coffee
 colostrum
@@ -12,7 +24,7 @@ oat milk
 ashwagandha
 bone broth
 sea moss
-electrolyte powder
+electrolytes
 magnesium glycinate
-collagen peptides
-prebiotic soda
+collagen
+olipop

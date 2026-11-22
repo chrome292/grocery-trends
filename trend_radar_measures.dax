@@ -73,6 +73,41 @@ RETURN
         "Steady"
     )
 
+-- ---------- Year over year: the seasonally fair view ----------
+
+-- The same 12 weeks one year earlier. Needs at least 64 weeks of search data.
+Interest LY12W =
+VAR LastIdx = [Last Week Index]
+RETURN
+    CALCULATE (
+        [Interest],
+        FILTER (
+            ALL ( Weeks ),
+            Weeks[WeekIndex] > LastIdx - 64 && Weeks[WeekIndex] <= LastIdx - 52
+        )
+    )
+
+-- Format as a percentage. Last 12 weeks vs. the same 12 weeks a year ago.
+-- [Momentum %] compares against the 12 weeks just before, so it falls every
+-- autumn for summer products and rises every autumn for winter ones. This
+-- measure compares like with like.
+YoY % = DIVIDE ( [Interest L12W] - [Interest LY12W], [Interest LY12W] )
+
+-- The status the radar acts on. It uses the year-over-year change, and
+-- falls back to the 12-week momentum when there is not a year of history.
+-- Change the two 0.15 thresholds here to make the bands wider or narrower.
+Trend Status =
+VAR Chg = IF ( ISBLANK ( [Interest LY12W] ), [Momentum %], [YoY %] )
+RETURN
+    SWITCH (
+        TRUE (),
+        ISBLANK ( Chg ), BLANK (),
+        Chg > 0.15, "Rising",
+        Chg < -0.15, "Cooling",
+        "Steady"
+    )
+
+
 -- ---------- Local momentum: each store against its own state ----------
 
 -- A store filter reaches Sales but not Trends, so [Momentum %] on its own
@@ -96,10 +131,20 @@ RETURN
         "Steady"
     )
 
+YoY % (Local) =
+VAR StoreStates = VALUES ( Stores[State] )
+RETURN
+    CALCULATE ( [YoY %], TREATAS ( StoreStates, Geos[State] ) )
+
+Trend Status (Local) =
+VAR StoreStates = VALUES ( Stores[State] )
+RETURN
+    CALCULATE ( [Trend Status], TREATAS ( StoreStates, Geos[State] ) )
+
 -- For field-value conditional formatting.
 Status Color =
 SWITCH (
-    [Momentum Status],
+    [Trend Status],
     "Rising", "#2E9E5B",
     "Cooling", "#D64545",
     "Steady", "#9AA0A6"
@@ -147,17 +192,17 @@ Store Distribution % = DIVIDE ( [Stores Carrying], [Store Count] )
 
 -- 1 when the tag is Rising in the store's own state and the store does
 -- not carry it. Use as a visual-level filter (Rising Gap = 1) on the pitch list.
-Rising Gap = IF ( [Momentum Status (Local)] = "Rising" && [Carries Tag] = 0, 1, 0 )
+Rising Gap = IF ( [Trend Status (Local)] = "Rising" && [Carries Tag] = 0, 1, 0 )
 
 -- How many tags are Rising in the store's own state. Stores in different
 -- states can have different counts.
 Rising Tags =
-COUNTROWS ( FILTER ( ALL ( Tags[Tag] ), [Momentum Status (Local)] = "Rising" ) ) + 0
+COUNTROWS ( FILTER ( ALL ( Tags[Tag] ), [Trend Status (Local)] = "Rising" ) ) + 0
 
 -- How many of those Rising tags the store in context carries.
 Rising Tags Carried =
 COUNTROWS (
-    FILTER ( ALL ( Tags[Tag] ), [Momentum Status (Local)] = "Rising" && [Carries Tag] = 1 )
+    FILTER ( ALL ( Tags[Tag] ), [Trend Status (Local)] = "Rising" && [Carries Tag] = 1 )
 ) + 0
 
 -- Format as a percentage. Put Stores[Store] on rows.
@@ -199,9 +244,9 @@ RETURN
 
 -- ---------- Radar labels ----------
 
--- Matches the constant lines on the scatter chart: X at 0.15, Y at 0.5.
+-- Matches the constant lines on the scatter chart: X ([YoY %]) at 0.15, Y at 0.5.
 Radar Quadrant =
-VAR Mom = [Momentum %]
+VAR Mom = IF ( ISBLANK ( [Interest LY12W] ), [Momentum %], [YoY %] )
 VAR Dist = [Store Distribution %]
 RETURN
     SWITCH (

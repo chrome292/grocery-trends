@@ -3,9 +3,15 @@
     python check_trends.py trends.csv
 
 It checks the file's shape, then prints momentum for every tag in every
-state, using the same rule as the Power BI measures: average interest over
-the last 12 weeks vs. the 12 weeks before. Above +15% is Rising, below -15%
-is Cooling.
+state, two ways, with the same rules as the Power BI measures:
+
+  YoY   last 12 weeks vs. the same 12 weeks a year earlier. This is what the
+        status is based on. Above +15% is Rising, below -15% is Cooling.
+  12w   last 12 weeks vs. the 12 weeks just before. This moves with the
+        seasons, so read it as "what changed lately", not as the trend.
+
+With less than 64 weeks of data there is no year-ago period, and the status
+falls back to the 12-week figure.
 """
 
 from __future__ import annotations
@@ -56,25 +62,30 @@ def shape_problems(df: pd.DataFrame, today: date) -> list[str]:
     return problems
 
 
+def change(now: float, before: float) -> float:
+    return (now / before - 1) if pd.notna(before) and before > 0 and pd.notna(now) else float("nan")
+
+
 def momentum_table(df: pd.DataFrame) -> pd.DataFrame:
-    """One row per geo and tag, measured on that geo's own latest 24 weeks."""
+    """One row per geo and tag, measured on that geo's own latest weeks."""
     rows = []
     for (geo, tag), g in df.groupby(["Geo", "Tag"]):
         weeks = sorted(df[df["Geo"] == geo]["Week"].unique())
-        last12, prior12 = set(weeks[-12:]), set(weeks[-24:-12])
-        l12 = g[g["Week"].isin(last12)]["Interest"].mean()
-        p12 = g[g["Week"].isin(prior12)]["Interest"].mean()
-        mom = (l12 / p12 - 1) if p12 and pd.notna(p12) and p12 > 0 else float("nan")
-        if pd.isna(mom):
+        mean = lambda ws: g[g["Week"].isin(set(ws))]["Interest"].mean() if len(ws) else float("nan")
+        l12, p12 = mean(weeks[-12:]), mean(weeks[-24:-12])
+        ly12 = mean(weeks[-64:-52]) if len(weeks) >= 64 else float("nan")
+        mom, yoy = change(l12, p12), change(l12, ly12)
+        basis = yoy if pd.notna(yoy) else mom
+        if pd.isna(basis):
             status = "No data"
-        elif mom > RISING:
+        elif basis > RISING:
             status = "Rising"
-        elif mom < COOLING:
+        elif basis < COOLING:
             status = "Cooling"
         else:
             status = "Steady"
-        rows.append({"Geo": geo, "Tag": tag, "Momentum": mom, "Status": status,
-                     "Level": l12, "Noisy": bool(pd.notna(l12) and l12 < LOW_INTEREST)})
+        rows.append({"Geo": geo, "Tag": tag, "Momentum": mom, "YoY": yoy, "Status": status,
+                     "Level": l12, "Noisy": bool(pd.isna(l12) or l12 < LOW_INTEREST)})
     return pd.DataFrame(rows)
 
 
@@ -93,20 +104,28 @@ def main() -> None:
 
     table = momentum_table(df)
 
+    def pct(x: float) -> str:
+        return "n/a" if pd.isna(x) else f"{round(x * 100) + 0:+d}%"
+
     def cell(r) -> str:
         if r["Status"] == "No data":
             return "no data"
-        return f"{r['Momentum'] * 100:+.0f}% {r['Status']}{' *' if r['Noisy'] else ''}"
+        return f"{r['Status']}{'*' if r['Noisy'] else ''} (YoY {pct(r['YoY'])}, 12w {pct(r['Momentum'])})"
 
     table["Cell"] = table.apply(cell, axis=1)
-    wide = table.pivot(index="Tag", columns="Geo", values="Cell").fillna("missing")
-    print("\nMomentum, last 12 weeks vs. the 12 before:\n")
-    print(wide.to_string())
+    print("\nStatus by state. YoY = vs. the same 12 weeks a year earlier; "
+          "12w = vs. the 12 weeks just before.")
+    for geo in geos:
+        g = table[table["Geo"] == geo].sort_values("YoY", ascending=False, na_position="last")
+        print(f"\n{geo}")
+        for _, r in g.iterrows():
+            print(f"  {r['Tag']:<22}{r['Cell']}")
     if table["Noisy"].any():
-        print(f"\n* average interest under {LOW_INTEREST} in the last 12 weeks: "
-              "too little search volume to trust the momentum figure.")
-    print("\nA Rising tag is not always a trend. Seasonal items (bone broth, for one) "
-          "rise every fall; compare them with the same weeks last year.")
+        print(f"\n* average interest under {LOW_INTEREST} in the last 12 weeks: too little search "
+              "volume to trust. Pull again with --solo, try a broader term, or a larger region.")
+    if table["YoY"].isna().all():
+        print("\nNo year-ago period in this file (it needs 64 weeks), so the status uses the "
+              "12-week figure, which moves with the seasons.")
 
 
 if __name__ == "__main__":

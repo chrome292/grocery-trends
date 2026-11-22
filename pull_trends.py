@@ -21,6 +21,16 @@ one anchor term goes into every batch. Each batch is then rescaled so its
 anchor line matches the first batch's anchor line. After that every tag is
 on one scale and can be compared.
 
+Sharper trends for small tags
+-----------------------------
+In a comparison, Google rounds every value to a whole number on a scale set
+by the most searched term, so a small tag is squeezed into values like 0, 1
+and 2 and its trend is lost. Pulled on its own, the same tag uses the full
+0 to 100 range. Add --solo to the live pull to fetch each tag alone as well.
+For manual exports, also download each tag by itself (one term, no
+comparison) into the same folder; single-term files are detected
+automatically. The solo pull supplies the shape, the comparison the size.
+
 The newest week is dropped when it is not complete yet, because a part
 week reads low and pulls momentum down. Pass --keep-partial to keep it.
 """
@@ -68,17 +78,23 @@ def drop_flagged_partial(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def pull_live(tags: list[str], anchor: str, geo: str, timeframe: str, pause: float,
-              keep_partial: bool = False) -> list[pd.DataFrame]:
+              keep_partial: bool = False, solo: bool = False) -> list[pd.DataFrame]:
+    """Pull the comparison batches, and with solo=True each tag on its own as well."""
     try:
         from pytrends.request import TrendReq
     except ImportError:
         sys.exit("pytrends is not installed. Run: pip install pytrends   (or use --from-csv)")
 
     client = TrendReq(hl="en-US", tz=300)
-    frames = []
     groups = batches(tags, anchor)
-    for n, group in enumerate(groups, start=1):
-        print(f"Batch {n} of {len(groups)}: {', '.join(group)}")
+    labels = [f"Batch {n} of {len(groups)}" for n in range(1, len(groups) + 1)]
+    if solo:
+        groups += [[t] for t in tags]
+        labels += [f"Solo {n} of {len(tags)}" for n in range(1, len(tags) + 1)]
+
+    frames = []
+    for label, group in zip(labels, groups):
+        print(f"{label}: {', '.join(group)}")
         for attempt in range(1, ATTEMPTS + 1):
             try:
                 client.build_payload(group, timeframe=timeframe, geo=geo)
@@ -97,6 +113,11 @@ def pull_live(tags: list[str], anchor: str, geo: str, timeframe: str, pause: flo
                 "Use Route B: download the CSVs by hand and run with --from-csv."
             )
         if df.empty:
+            if len(group) == 1:
+                # Google returns nothing at all for a term with too few searches.
+                print(f"  no data for '{group[0]}' on its own; keeping its comparison values")
+                time.sleep(pause)
+                continue
             sys.exit(f"Google returned no data for: {', '.join(group)}")
         if keep_partial:
             df = df.drop(columns=[c for c in df.columns if c == "isPartial"])
@@ -172,11 +193,48 @@ def usable(mean: float) -> bool:
     return pd.notna(mean) and mean > 0
 
 
-def stitch(frames: list[pd.DataFrame], anchor: str, weeks: int = 0) -> pd.DataFrame:
+def split_solos(frames: list[pd.DataFrame]) -> tuple[list[pd.DataFrame], dict[str, pd.Series]]:
+    """Separate comparison batches (several terms) from solo pulls (one term)."""
+    batch_frames = [f for f in frames if len(f.columns) > 1]
+    solos = {f.columns[0].lower(): f.iloc[:, 0] for f in frames if len(f.columns) == 1}
+    if not batch_frames:
+        sys.exit("Only single-term files were found. Comparison exports "
+                 "(the anchor plus up to 4 tags) are needed to size the tags against each other.")
+    return batch_frames, solos
+
+
+def apply_solos(combined: pd.DataFrame, solos: dict[str, pd.Series]) -> pd.DataFrame:
+    """Swap in each tag's solo shape, keeping its size from the comparison.
+
+    In a comparison, Google rounds to whole numbers on a scale set by the
+    most searched term, so a small tag is squeezed into a few values like
+    0, 1 and 2. Pulled on its own, the same tag uses the full 0 to 100
+    range. So the solo pull gives the shape over time, and the comparison
+    gives how big the tag is next to the others.
+    """
+    combined = combined.copy()
+    for col in combined.columns:
+        solo = solos.get(col.lower())
+        if solo is None:
+            continue
+        shared = combined.index.intersection(solo.index)
+        level, solo_mean = combined.loc[shared, col].mean(), solo[shared].mean()
+        if not usable(solo_mean):
+            continue
+        if not usable(level):
+            print(f"  '{col}' is zero in every comparison week, so its size is unknown; left at zero")
+            continue
+        combined[col] = solo.reindex(combined.index) * (level / solo_mean)
+        print(f"  '{col}': solo shape used")
+    return combined
+
+
+def stitch(frames: list[pd.DataFrame], anchor: str, weeks: int = 0,
+           solos: dict[str, pd.Series] | None = None) -> pd.DataFrame:
     """Rescale each batch so its anchor matches the first batch's anchor.
 
-    Keeps the latest `weeks` weeks (0 keeps all), then sets the largest
-    value that is left to 100.
+    Then swaps in solo shapes where given, keeps the latest `weeks` weeks
+    (0 keeps all), and sets the largest value that is left to 100.
     """
     for i, df in enumerate(frames, start=1):
         if find_column(df, anchor) is None:
@@ -202,6 +260,8 @@ def stitch(frames: list[pd.DataFrame], anchor: str, weeks: int = 0) -> pd.DataFr
             if col.lower() != anchor.lower() and find_column(combined, col) is None:
                 combined[col] = df[col] * factor
     combined = combined.sort_index()
+    if solos:
+        combined = apply_solos(combined, solos)
     if weeks > 0:
         combined = combined.tail(weeks)
     # Final rescale so the largest value in the weeks kept is 100, like Google's own scale.
@@ -231,9 +291,10 @@ def run_one(args, geo: str, folder: str | None) -> pd.DataFrame:
     else:
         tags = read_tags(args.tags)
         anchor = args.anchor or tags[0]
-        frames = pull_live(tags, anchor, geo, args.timeframe, args.pause, args.keep_partial)
+        frames = pull_live(tags, anchor, geo, args.timeframe, args.pause, args.keep_partial, args.solo)
     print(f"Anchor term: {anchor}")
-    return to_long(stitch(frames, anchor, args.weeks), geo)
+    batch_frames, solos = split_solos(frames)
+    return to_long(stitch(batch_frames, anchor, args.weeks, solos), geo)
 
 
 def main() -> None:
@@ -248,6 +309,9 @@ def main() -> None:
     ap.add_argument("--timeframe", default="today 5-y", help="live pull only; 5 years gives weekly points")
     ap.add_argument("--weeks", type=int, default=104, help="keep the latest N weeks (0 keeps all)")
     ap.add_argument("--pause", type=float, default=5.0, help="live pull only; seconds between requests")
+    ap.add_argument("--solo", action="store_true",
+                    help="live pull only; also pull each tag on its own for a sharper trend shape "
+                         "(one extra request per tag, so Google is more likely to block the run)")
     ap.add_argument("--keep-partial", action="store_true",
                     help="keep the newest week even if it is not complete yet")
     ap.add_argument("--out", default="trends.csv")

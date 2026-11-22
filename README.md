@@ -60,15 +60,45 @@ Each state is scaled on its own, the way Google does it, so a 60 in
 Maryland is not a 60 in West Virginia. Compare momentum across states, not
 levels.
 
+**Small states and DC.** Google hides low search volumes, so a small area
+comes back mostly as zeros. In a real pull, DC and West Virginia were zero
+in more than half the weeks for most tags. For DC, use the Washington metro
+area instead, code `US-DC-511` (it covers the Maryland and Virginia suburbs
+too), and give it the `Geos` row `US-DC-511, DC, Washington metro`. West
+Virginia may be too thin statewide for anything but the biggest tags.
+
+**Sharper trends for small tags.** In a comparison, Google rounds every
+value to a whole number on a scale set by the most searched term (matcha,
+in practice), so small tags are squeezed into values like 0, 1 and 2. Add
+`--solo` to the live pull to fetch each tag on its own as well: the solo
+pull gives the shape over time, the comparison gives the size. It costs one
+extra request per tag per state, so Google is more likely to block the run;
+do one or two states at a time. For manual exports, also download each tag
+by itself into the same folder. Single-term files are picked up
+automatically.
+
+## Two ways of measuring change
+
+| Measure | Compares the last 12 weeks with | Use it for |
+| --- | --- | --- |
+| `YoY %` | the same 12 weeks a year earlier | The trend. `Trend Status` (Rising, Steady, Cooling) is based on this, and so are the radar, store readiness and the pitch list. |
+| `Momentum %` | the 12 weeks just before | What changed lately. It moves with the seasons, so do not act on it alone. |
+
+A real pull in November 2026 showed why: almost every tag had fallen over
+the previous 12 weeks in every state at once, which is the season, not 13
+separate declines. Year over year, the same data showed magnesium glycinate
+and matcha growing. `Trend Status` falls back to `Momentum %` only when
+there is less than 64 weeks of search data.
+
 ## Each store is judged against its own state
 
 The `Geos` table has one row per search region (`Geo`, `State`,
 `StateName`) and links `Trends[Geo]` to `Stores[State]`. The measures
-`Momentum % (Local)` and `Momentum Status (Local)` read the state of the
+`YoY % (Local)`, `Trend Status (Local)` and `Momentum % (Local)` read the state of the
 store in context, so Rising Gap, Store Readiness % and Rising Gaps judge a
 Virginia store on Virginia search. Use `Geos[StateName]` as the state
 slicer: it filters stores and search together. With no state selected, the
-plain `Momentum %` averages the states with equal weight.
+plain `YoY %` and `Momentum %` average the states with equal weight.
 
 When you add a state, add its row to `Geos` and pull its trends. A state
 that has stores but no search data shows no Rising tags for those stores.
@@ -90,11 +120,10 @@ largest value among them to 100.
 
 ## One thing to know about the sample
 
-Bone broth shows as Rising (+41.7%), but that is seasonality, not a trend.
-Its underlying trend is flat; the data ends in November, on the way up to a
-winter peak. It is in the sample on purpose, to show how a seasonal tag
-fools the momentum measure. Compare a seasonal tag against the same weeks
-last year before pitching it.
+Bone broth is seasonal on purpose. Its 12-week momentum is +41.7%, because
+the data ends in November on the way up to a winter peak, but year over
+year it is flat. The radar acts on year over year, so it shows bone broth
+as Steady. That is the difference between the two measures in one row.
 
 ## What has been tested
 
@@ -105,6 +134,9 @@ last year before pitching it.
   rounding. Also checked: an unfinished last week is dropped, an all-zero
   anchor stops the script with an error and writes nothing, and the kept
   weeks peak at 100.
+- Solo shapes were checked on exports built from known data: momentum for
+  a small tag was closer to the truth with them than without.
+- `check_trends.py` was run on a real five-state pull and on the sample.
 - The retry logic of the live pull was checked with a stand-in for Google
   that always fails. A real live pull was **not** tested.
 - The DAX has **not** been run inside Power BI.

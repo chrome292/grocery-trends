@@ -33,11 +33,12 @@ N_STORES = 24
 # Momentum is search interest over the last 12 weeks vs. the 12 before.
 # The target is the underlying trend, before the seasonal swing is applied.
 # Bone broth is the one seasonal tag, on purpose: its trend is flat, but the
-# data ends in November, on the way up to a December peak, so it reads as
-# Rising. It is there to show how a seasonal tag fools the momentum measure.
+# data ends in November, on the way up to a December peak, so its 12-week
+# momentum is strongly positive while its year-over-year change is near zero.
+# It is there to show why the radar acts on year-over-year, not momentum.
 TAGS = {
     "kombucha":            ("Grocery",   55,  0.00, 23, 0.00),
-    "mushroom coffee":     ("Grocery",   30,  0.08, 14, 0.00),
+    "mushroom coffee":     ("Grocery",   30,  0.05, 14, 0.00),
     "colostrum":           ("Nutrition", 22,  0.23,  6, 0.00),
     "beef tallow":         ("Body Care", 26,  0.34, 11, 0.00),
     "matcha":              ("Grocery",   48,  0.18, 13, 0.00),
@@ -46,9 +47,9 @@ TAGS = {
     "bone broth":          ("Grocery",   28,  0.00, 16, 0.28),
     "sea moss":            ("Nutrition", 18, -0.06,  9, 0.00),
     "electrolyte powder":  ("Nutrition", 34,  0.05, 17, 0.00),
-    "magnesium glycinate": ("Nutrition", 36,  0.10, 15, 0.00),
+    "magnesium glycinate": ("Nutrition", 36,  0.05, 15, 0.00),
     "collagen peptides":   ("Nutrition", 32, -0.04, 18, 0.00),
-    "prebiotic soda":      ("Grocery",   24,  0.11, 16, 0.00),
+    "prebiotic soda":      ("Grocery",   24,  0.05, 16, 0.00),
 }
 
 # SKU, product, brand, tag, unit price, popularity (typical weekly units)
@@ -122,7 +123,7 @@ STORES = [
 # state: (level multiplier, {tag: target momentum in that state}).
 GEOS = {
     "US-MD": ("MD", "Maryland", 1.00, {}),
-    "US-DC": ("DC", "District of Columbia", 0.90, {"mushroom coffee": 0.26, "beef tallow": 0.08}),
+    "US-DC": ("DC", "District of Columbia", 0.90, {"mushroom coffee": 0.26, "beef tallow": 0.04}),
     "US-VA": ("VA", "Virginia", 1.08, {"matcha": 0.03, "prebiotic soda": 0.24}),
 }
 
@@ -152,8 +153,9 @@ README = [
     "  - Sales follow the store's own state's search interest with a 3-week lag.",
     "  - A store carries a SKU if it has sales rows for it.",
     "  - Tag text is the exact Google search term. It links search to products.",
-    "  - Bone broth is seasonal on purpose. Its underlying trend is flat, but the",
-    "    data ends in November, so it reads as Rising. Treat it as a false alarm.",
+    "  - Bone broth is seasonal on purpose. Its 12-week momentum is strongly",
+    "    positive because the data ends in November, but year over year it is",
+    "    flat, so the radar correctly shows it as Steady.",
     "",
     "Rebuild this file any time with: python make_sample_data.py",
 ]
@@ -321,11 +323,14 @@ def summarize(tables: dict[str, pd.DataFrame]) -> pd.DataFrame:
     """The same numbers the DAX measures produce, for checking the sample."""
     trends, sales, products, stores = (tables[k] for k in ("Trends", "Sales", "Products", "Stores"))
     wk = sorted(trends["Week"].unique())
-    last12, prior12 = set(wk[-12:]), set(wk[-24:-12])
+    last12, prior12, year_ago = set(wk[-12:]), set(wk[-24:-12]), set(wk[-64:-52])
     recent = sales[sales["Week"].isin(last12)].merge(products[["SKU", "Tag"]], on="SKU")
 
     def momentum(t: pd.DataFrame) -> float:
         return t[t["Week"].isin(last12)]["Interest"].mean() / t[t["Week"].isin(prior12)]["Interest"].mean() - 1
+
+    def yoy(t: pd.DataFrame) -> float:
+        return t[t["Week"].isin(last12)]["Interest"].mean() / t[t["Week"].isin(year_ago)]["Interest"].mean() - 1
 
     def status(m: float) -> str:
         return "Rising" if m > 0.15 else "Cooling" if m < -0.15 else "Steady"
@@ -334,13 +339,14 @@ def summarize(tables: dict[str, pd.DataFrame]) -> pd.DataFrame:
     for tag in TAGS:
         t = trends[trends["Tag"] == tag]
         row = {"Tag": tag}
+        # 12w = [Momentum %], YoY = [YoY %]; the status is [Trend Status], which uses YoY.
         for geo, (state, *_rest) in GEOS.items():
-            m = momentum(t[t["Geo"] == geo])
-            row[f"{state} %"] = round(m * 100, 1)
-            row[state] = status(m)
-        m_all = momentum(t)  # what [Momentum %] shows with no state selected
-        row["All %"] = round(m_all * 100, 1)
-        row["All"] = status(m_all)
+            tg = t[t["Geo"] == geo]
+            row[f"{state} 12w"] = round(momentum(tg) * 100, 1)
+            row[f"{state} YoY"] = round(yoy(tg) * 100, 1)
+            row[state] = status(yoy(tg))
+        row["All YoY"] = round(yoy(t) * 100, 1)  # no state selected
+        row["All"] = status(yoy(t))
         row["Stores %"] = round(recent[recent["Tag"] == tag]["StoreID"].nunique() / len(stores) * 100, 1)
         row["Note"] = "seasonal" if TAGS[tag][4] else ""
         out.append(row)
