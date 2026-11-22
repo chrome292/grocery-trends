@@ -5,7 +5,7 @@
 -- New measure and paste the block. Paste them in this order, because
 -- later measures call earlier ones.
 --
--- Tables expected: Tags, Trends, Products, Stores, Sales, Weeks.
+-- Tables expected: Tags, Trends, Products, Stores, Sales, Weeks, Geos.
 -- [Interest (Lagged)] also needs a numeric parameter named "Lag Weeks"
 -- (Modeling > New parameter > Numeric range, 0 to 8 by 1).
 --
@@ -73,6 +73,29 @@ RETURN
         "Steady"
     )
 
+-- ---------- Local momentum: each store against its own state ----------
+
+-- A store filter reaches Sales but not Trends, so [Momentum %] on its own
+-- is the same for every store. This version reads the state(s) of the
+-- stores in context and looks at search in those states only. With one
+-- store, that is the store's own state. With no store filter, it is every
+-- state that has stores (inside any Geos slicer).
+Momentum % (Local) =
+VAR StoreStates = VALUES ( Stores[State] )
+RETURN
+    CALCULATE ( [Momentum %], TREATAS ( StoreStates, Geos[State] ) )
+
+Momentum Status (Local) =
+VAR Mom = [Momentum % (Local)]
+RETURN
+    SWITCH (
+        TRUE (),
+        ISBLANK ( Mom ), BLANK (),
+        Mom > 0.15, "Rising",
+        Mom < -0.15, "Cooling",
+        "Steady"
+    )
+
 -- For field-value conditional formatting.
 Status Color =
 SWITCH (
@@ -122,19 +145,19 @@ Store Distribution % = DIVIDE ( [Stores Carrying], [Store Count] )
 
 -- ---------- Store readiness ----------
 
--- 1 when the tag is Rising and the store does not carry it.
--- Use as a visual-level filter (Rising Gap = 1) on the pitch list.
-Rising Gap = IF ( [Momentum Status] = "Rising" && [Carries Tag] = 0, 1, 0 )
+-- 1 when the tag is Rising in the store's own state and the store does
+-- not carry it. Use as a visual-level filter (Rising Gap = 1) on the pitch list.
+Rising Gap = IF ( [Momentum Status (Local)] = "Rising" && [Carries Tag] = 0, 1, 0 )
 
--- How many tags are Rising. The same for every store, because a
--- store filter never reaches the Trends table.
+-- How many tags are Rising in the store's own state. Stores in different
+-- states can have different counts.
 Rising Tags =
-COUNTROWS ( FILTER ( ALL ( Tags[Tag] ), [Momentum Status] = "Rising" ) ) + 0
+COUNTROWS ( FILTER ( ALL ( Tags[Tag] ), [Momentum Status (Local)] = "Rising" ) ) + 0
 
--- How many of the Rising tags the store in context carries.
+-- How many of those Rising tags the store in context carries.
 Rising Tags Carried =
 COUNTROWS (
-    FILTER ( ALL ( Tags[Tag] ), [Momentum Status] = "Rising" && [Carries Tag] = 1 )
+    FILTER ( ALL ( Tags[Tag] ), [Momentum Status (Local)] = "Rising" && [Carries Tag] = 1 )
 ) + 0
 
 -- Format as a percentage. Put Stores[Store] on rows.

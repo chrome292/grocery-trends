@@ -116,6 +116,16 @@ STORES = [
     ("Falls Church Green Basket", "Independent Natural", "Small", "Falls Church", "VA"),
 ]
 
+# Search regions in the sample. One row per state that has stores.
+# Maryland uses the TAGS targets as they are. The other two differ on a few
+# tags on purpose, so the report shows why a store is judged against its own
+# state: (level multiplier, {tag: target momentum in that state}).
+GEOS = {
+    "US-MD": ("MD", "Maryland", 1.00, {}),
+    "US-DC": ("DC", "District of Columbia", 0.90, {"mushroom coffee": 0.26, "beef tallow": 0.08}),
+    "US-VA": ("VA", "Virginia", 1.08, {"matcha": 0.03, "prebiotic soda": 0.24}),
+}
+
 SIZE_SCALE = {"Small": 0.6, "Medium": 1.0, "Large": 1.6}
 
 README = [
@@ -125,9 +135,10 @@ README = [
     "trend curves are invented so you can build and test the report before",
     "you have real data. Do not quote any number here as a real figure.",
     "",
-    "Six tables, one per sheet. In Power BI, load the tables (not the sheets):",
+    "Seven tables, one per sheet. In Power BI, load the tables (not the sheets):",
     "  Tags      1 row per tag             Tag, Category",
-    "  Trends    tag x week                Week, Tag, Interest, Geo",
+    "  Trends    tag x week x region       Week, Tag, Interest, Geo",
+    "  Geos      1 row per search region   Geo, State, StateName",
     "  Products  1 row per SKU             SKU, Product, Brand, Category, Tag, UnitPrice",
     "  Stores    1 row per store           StoreID, Store, StoreType, SizeTier, City, State",
     "  Sales     store x SKU x week        Week, StoreID, SKU, Units, Dollars",
@@ -136,7 +147,9 @@ README = [
     "How the sample was built:",
     "  - 104 weeks of search interest and 52 weeks of sales, ending 2026-11-15.",
     "  - Weeks start on Sunday, the same as Google Trends.",
-    "  - Sales follow search interest with a 3-week lag.",
+    "  - Search data covers Maryland, DC and Virginia. A store is judged against",
+    "    its own state. DC and Virginia differ from Maryland on a few tags on purpose.",
+    "  - Sales follow the store's own state's search interest with a 3-week lag.",
     "  - A store carries a SKU if it has sales rows for it.",
     "  - Tag text is the exact Google search term. It links search to products.",
     "  - Bone broth is seasonal on purpose. Its underlying trend is flat, but the",
@@ -177,14 +190,30 @@ def build():
 
     tags = pd.DataFrame([{"Tag": t, "Category": v[0]} for t, v in TAGS.items()])
 
-    curves = {t: trend_curve(rng, bump_rng, v[1], v[2], v[4], weeks) for t, v in TAGS.items()}
+    # curves[geo][tag]. Maryland draws from the main random stream, so its
+    # numbers stay the same when other states are added or changed.
+    curves = {"US-MD": {t: trend_curve(rng, bump_rng, v[1], v[2], v[4], weeks) for t, v in TAGS.items()}}
+    for n, (geo, (_, _, level, overrides)) in enumerate(GEOS.items()):
+        if geo == "US-MD":
+            continue
+        g_rng = np.random.default_rng(SEED + 100 + n)
+        g_bump = np.random.default_rng(SEED + 200 + n)
+        curves[geo] = {
+            t: trend_curve(g_rng, g_bump, min(v[1] * level, 70), overrides.get(t, v[2]), v[4], weeks)
+            for t, v in TAGS.items()
+        }
     trends = pd.DataFrame(
         [
-            {"Week": w, "Tag": t, "Interest": float(curves[t][i]), "Geo": "US-MD"}
+            {"Week": w, "Tag": t, "Interest": float(curves[geo][t][i]), "Geo": geo}
+            for geo in GEOS
             for t in TAGS
             for i, w in enumerate(weeks)
         ]
     )
+    geos = pd.DataFrame(
+        [{"Geo": geo, "State": v[0], "StateName": v[1]} for geo, v in GEOS.items()]
+    )
+    geo_of_state = {v[0]: geo for geo, v in GEOS.items()}
 
     products = pd.DataFrame(
         [
@@ -211,7 +240,9 @@ def build():
             picked = [p for p in tag_skus if rng.random() < 0.62]
             if not picked:
                 picked = [tag_skus[int(rng.integers(len(tag_skus)))]]
-            rel = curves[tag] / curves[tag][-N_SALES_WEEKS:].mean()
+            # Sales follow the search curve of the store's own state.
+            curve = curves[geo_of_state[STORES[s][4]]][tag]
+            rel = curve / curve[-N_SALES_WEEKS:].mean()
             for sku, _, _, _, price, pop in picked:
                 for i in range(N_WEEKS - N_SALES_WEEKS, N_WEEKS):
                     lam = scale[s] * pop * rel[i - LAG]
@@ -228,7 +259,7 @@ def build():
         ]
     )
     return {"Tags": tags, "Trends": trends, "Products": products, "Stores": stores,
-            "Sales": sales, "Weeks": weeks_df}
+            "Sales": sales, "Weeks": weeks_df, "Geos": geos}
 
 
 def write_workbook(tables: dict[str, pd.DataFrame], path: str) -> None:
@@ -288,21 +319,31 @@ def freeze_timestamps(path: str) -> None:
 
 def summarize(tables: dict[str, pd.DataFrame]) -> pd.DataFrame:
     """The same numbers the DAX measures produce, for checking the sample."""
-    trends, sales, products = tables["Trends"], tables["Sales"], tables["Products"]
+    trends, sales, products, stores = (tables[k] for k in ("Trends", "Sales", "Products", "Stores"))
     wk = sorted(trends["Week"].unique())
     last12, prior12 = set(wk[-12:]), set(wk[-24:-12])
-    out = []
     recent = sales[sales["Week"].isin(last12)].merge(products[["SKU", "Tag"]], on="SKU")
+
+    def momentum(t: pd.DataFrame) -> float:
+        return t[t["Week"].isin(last12)]["Interest"].mean() / t[t["Week"].isin(prior12)]["Interest"].mean() - 1
+
+    def status(m: float) -> str:
+        return "Rising" if m > 0.15 else "Cooling" if m < -0.15 else "Steady"
+
+    out = []
     for tag in TAGS:
         t = trends[trends["Tag"] == tag]
-        l12 = t[t["Week"].isin(last12)]["Interest"].mean()
-        p12 = t[t["Week"].isin(prior12)]["Interest"].mean()
-        mom = l12 / p12 - 1
-        dist = recent[recent["Tag"] == tag]["StoreID"].nunique() / N_STORES
-        status = "Rising" if mom > 0.15 else "Cooling" if mom < -0.15 else "Steady"
-        note = "seasonal: momentum is not a real trend" if TAGS[tag][4] else ""
-        out.append({"Tag": tag, "Momentum %": round(mom * 100, 1), "Status": status,
-                    "Store Distribution %": round(dist * 100, 1), "Note": note})
+        row = {"Tag": tag}
+        for geo, (state, *_rest) in GEOS.items():
+            m = momentum(t[t["Geo"] == geo])
+            row[f"{state} %"] = round(m * 100, 1)
+            row[state] = status(m)
+        m_all = momentum(t)  # what [Momentum %] shows with no state selected
+        row["All %"] = round(m_all * 100, 1)
+        row["All"] = status(m_all)
+        row["Stores %"] = round(recent[recent["Tag"] == tag]["StoreID"].nunique() / len(stores) * 100, 1)
+        row["Note"] = "seasonal" if TAGS[tag][4] else ""
+        out.append(row)
     return pd.DataFrame(out)
 
 
