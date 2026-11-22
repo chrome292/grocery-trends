@@ -1,0 +1,15 @@
+id,label,value,source,base,period,tier
+L1,functional mushroom sales,$494.7 million,"SPINS Snapshot by Rahul Roy (SPINS), NutraIngredients, 28 Sep 2026","Natural, Conventional Multi-Outlet and Amazon",52 weeks ending 6 Sep 2026,publisher's own article
+L2,functional mushroom dollar growth,23.2%,same as L1,same as L1,same as L1,publisher's own article
+L3,functional mushroom unit growth,34.8%,same as L1,same as L1,same as L1,publisher's own article
+L4,consumers who bought functional mushrooms in the past 12 months,16%,same article; SPINS VMS Attitude & Usage Survey,"1,000 VMS consumers",fielded 9 to 21 May 2025,publisher's own article
+L5,consumers interested in trying or buying them,35%,same as L4,"1,000 VMS consumers",fielded 9 to 21 May 2025,publisher's own article
+L6,survey sample,"1,000",same as L4,VMS consumers,fielded 9 to 21 May 2025,publisher's own article
+L7,ashwagandha sales growth,27%,"Nutritional Outlook interview with Scott Dicker (SPINS), 13 Feb 2026; figure read out by the interviewer","multi-outlet; dollars or units not stated",2025,directional
+L8,colostrum growth in hair skin and nail,"2,000%",same as L7,"multi-outlet, hair skin and nail category; written as 'over 2,000%'",not stated,directional
+L9,colostrum growth in immune health,200%,same as L7,"natural channel, immune health category; written as 'over 200%'",not stated,directional
+L10,sea moss sales growth,204%,same as L7,channel not tied to the figure on the page,not stated,directional
+L11,sea moss sales growth in immune health,358%,same as L7,immune health category; channel not stated,not stated,directional
+L12,Whole Foods Market trend predictions,8,Whole Foods Market 2027 trend predictions page,n/a,predictions for 2027,publisher's own page
+L14,weeks in the mushroom sales period,52,same as L1,n/a,n/a,publisher's own article
+L15,purchase lookback in months,12,same as L4,n/a,n/a,publisher's own article
