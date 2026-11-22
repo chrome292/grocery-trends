@@ -1,7 +1,7 @@
 """Build trend_radar_sample_data.xlsx, the made-up dataset for the trend radar.
 
 Everything here is invented: the stores, brands, sales and trend curves.
-The numbers are seeded, so running this again rebuilds the same workbook.
+The numbers are seeded, so running this again rebuilds the same file.
 
     pip install pandas numpy openpyxl
     python make_sample_data.py
@@ -10,7 +10,9 @@ The numbers are seeded, so running this again rebuilds the same workbook.
 from __future__ import annotations
 
 import math
-from datetime import date, timedelta
+import re
+import zipfile
+from datetime import date, datetime, timedelta
 
 import numpy as np
 import pandas as pd
@@ -29,6 +31,10 @@ N_STORES = 24
 
 # tag: (category, typical interest, target momentum, stores carrying, seasonal swing)
 # Momentum is search interest over the last 12 weeks vs. the 12 before.
+# The target is the underlying trend, before the seasonal swing is applied.
+# Bone broth is the one seasonal tag, on purpose: its trend is flat, but the
+# data ends in November, on the way up to a December peak, so it reads as
+# Rising. It is there to show how a seasonal tag fools the momentum measure.
 TAGS = {
     "kombucha":            ("Grocery",   55,  0.00, 23, 0.00),
     "mushroom coffee":     ("Grocery",   30,  0.08, 14, 0.00),
@@ -133,6 +139,8 @@ README = [
     "  - Sales follow search interest with a 3-week lag.",
     "  - A store carries a SKU if it has sales rows for it.",
     "  - Tag text is the exact Google search term. It links search to products.",
+    "  - Bone broth is seasonal on purpose. Its underlying trend is flat, but the",
+    "    data ends in November, so it reads as Rising. Treat it as a false alarm.",
     "",
     "Rebuild this file any time with: python make_sample_data.py",
 ]
@@ -225,6 +233,7 @@ def build():
 
 def write_workbook(tables: dict[str, pd.DataFrame], path: str) -> None:
     wb = Workbook()
+    wb.properties.created = STAMP
     ws = wb.active
     ws.title = "README"
     for line in README:
@@ -249,6 +258,32 @@ def write_workbook(tables: dict[str, pd.DataFrame], path: str) -> None:
                 for cell in ws[get_column_letter(i)][1:]:
                     cell.number_format = "yyyy-mm-dd"
     wb.save(path)
+    freeze_timestamps(path)
+
+
+STAMP = datetime(LAST_WEEK.year, LAST_WEEK.month, LAST_WEEK.day)
+
+
+def freeze_timestamps(path: str) -> None:
+    """Make the saved file identical on every run.
+
+    An xlsx is a zip. openpyxl writes the save time into it in two places:
+    the 'modified' property and each zip entry's date. Both are set to a
+    fixed date here, so a rebuild with no code change gives the same bytes
+    and git does not show the workbook as changed.
+    """
+    with zipfile.ZipFile(path) as zin:
+        entries = [(info.filename, zin.read(info.filename)) for info in zin.infolist()]
+    fixed = STAMP.strftime("%Y-%m-%dT%H:%M:%SZ").encode()
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zout:
+        for name, data in entries:
+            if name == "docProps/core.xml":
+                data = re.sub(rb"(<dcterms:modified[^>]*>)[^<]*(</dcterms:modified>)",
+                              rb"\g<1>" + fixed + rb"\g<2>", data)
+            info = zipfile.ZipInfo(name, date_time=STAMP.timetuple()[:6])
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = 0o644 << 16
+            zout.writestr(info, data)
 
 
 def summarize(tables: dict[str, pd.DataFrame]) -> pd.DataFrame:
@@ -265,8 +300,9 @@ def summarize(tables: dict[str, pd.DataFrame]) -> pd.DataFrame:
         mom = l12 / p12 - 1
         dist = recent[recent["Tag"] == tag]["StoreID"].nunique() / N_STORES
         status = "Rising" if mom > 0.15 else "Cooling" if mom < -0.15 else "Steady"
+        note = "seasonal: momentum is not a real trend" if TAGS[tag][4] else ""
         out.append({"Tag": tag, "Momentum %": round(mom * 100, 1), "Status": status,
-                    "Store Distribution %": round(dist * 100, 1)})
+                    "Store Distribution %": round(dist * 100, 1), "Note": note})
     return pd.DataFrame(out)
 
 

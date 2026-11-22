@@ -21,9 +21,21 @@ Units = SUM ( Sales[Units] )
 
 Dollars = SUM ( Sales[Dollars] )
 
--- The newest week in the Weeks table, ignoring any week filter.
--- Keep the Weeks table ending on the last week that has data.
+-- The newest week in the Weeks table, ignoring any week filter. The search
+-- windows use this, so keep Weeks ending on the last week of search data.
 Last Week Index = CALCULATE ( MAX ( Weeks[WeekIndex] ), ALL ( Weeks ) )
+
+-- The newest week that has any sales, ignoring every filter. The sales
+-- windows use this, so a sales export that is a few weeks older than the
+-- search data does not make every store look like it carries nothing.
+Last Sales Week Index =
+VAR SalesWeeks = CALCULATETABLE ( VALUES ( Sales[Week] ), REMOVEFILTERS () )
+RETURN
+    CALCULATE (
+        MAX ( Weeks[WeekIndex] ),
+        REMOVEFILTERS (),
+        TREATAS ( SalesWeeks, Weeks[Week] )
+    )
 
 
 -- ---------- Search momentum ----------
@@ -73,13 +85,14 @@ SWITCH (
 
 -- ---------- Sales ----------
 
+-- Units over the latest 12 weeks of sales data.
 Units L12W =
-VAR LastIdx = [Last Week Index]
+VAR LastIdx = [Last Sales Week Index]
 RETURN
     CALCULATE ( [Units], FILTER ( ALL ( Weeks ), Weeks[WeekIndex] > LastIdx - 12 ) )
 
 Units P12W =
-VAR LastIdx = [Last Week Index]
+VAR LastIdx = [Last Sales Week Index]
 RETURN
     CALCULATE (
         [Units],

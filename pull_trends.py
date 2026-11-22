@@ -15,6 +15,9 @@ own 0-100 range, so a 60 in one batch is not a 60 in another. To fix that,
 one anchor term goes into every batch. Each batch is then rescaled so its
 anchor line matches the first batch's anchor line. After that every tag is
 on one scale and can be compared.
+
+The newest week is dropped when it is not complete yet, because a part
+week reads low and pulls momentum down. Pass --keep-partial to keep it.
 """
 
 from __future__ import annotations
@@ -24,11 +27,13 @@ import io
 import re
 import sys
 import time
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
 
 BATCH_SIZE = 4  # tags per batch, plus the anchor = Google's limit of 5
+ATTEMPTS = 5    # tries per batch before giving up on the live pull
 
 
 def read_tags(path: str) -> list[str]:
@@ -49,7 +54,16 @@ def batches(tags: list[str], anchor: str) -> list[list[str]]:
 
 # ---------- Route A: pytrends ----------
 
-def pull_live(tags: list[str], anchor: str, geo: str, timeframe: str, pause: float) -> list[pd.DataFrame]:
+def drop_flagged_partial(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop the rows pytrends flags as an incomplete period, then the flag column."""
+    if "isPartial" in df.columns:
+        partial = df["isPartial"].astype(str).str.lower() == "true"
+        df = df[~partial].drop(columns="isPartial")
+    return df
+
+
+def pull_live(tags: list[str], anchor: str, geo: str, timeframe: str, pause: float,
+              keep_partial: bool = False) -> list[pd.DataFrame]:
     try:
         from pytrends.request import TrendReq
     except ImportError:
@@ -60,13 +74,16 @@ def pull_live(tags: list[str], anchor: str, geo: str, timeframe: str, pause: flo
     groups = batches(tags, anchor)
     for n, group in enumerate(groups, start=1):
         print(f"Batch {n} of {len(groups)}: {', '.join(group)}")
-        for attempt in range(1, 6):
+        for attempt in range(1, ATTEMPTS + 1):
             try:
                 client.build_payload(group, timeframe=timeframe, geo=geo)
                 df = client.interest_over_time()
                 break
             except Exception as err:  # pytrends raises several types when Google blocks it
-                wait = pause * 2 ** attempt
+                if attempt == ATTEMPTS:
+                    print(f"  attempt {attempt} failed ({err})")
+                    continue  # no point waiting when there is no next try
+                wait = max(pause, 2.0) * 2 ** attempt
                 print(f"  attempt {attempt} failed ({err}); waiting {wait:.0f}s")
                 time.sleep(wait)
         else:
@@ -76,7 +93,10 @@ def pull_live(tags: list[str], anchor: str, geo: str, timeframe: str, pause: flo
             )
         if df.empty:
             sys.exit(f"Google returned no data for: {', '.join(group)}")
-        df = df.drop(columns=[c for c in df.columns if c == "isPartial"])
+        if keep_partial:
+            df = df.drop(columns=[c for c in df.columns if c == "isPartial"])
+        else:
+            df = drop_flagged_partial(df)
         df.index.name = "Week"
         frames.append(df.astype(float))
         time.sleep(pause)
@@ -106,7 +126,18 @@ def read_export(path: Path) -> pd.DataFrame:
     return df.dropna(how="all")
 
 
-def read_folder(folder: str) -> list[pd.DataFrame]:
+def drop_partial(df: pd.DataFrame, today: date) -> pd.DataFrame:
+    """Drop the last week if it had not finished when the file was downloaded.
+
+    A week that started less than 7 days ago holds only part of a week's
+    searches, and a low last week drags momentum down.
+    """
+    if len(df) and (pd.Timestamp(today) - df.index[-1]).days < 7:
+        return df.iloc[:-1]
+    return df
+
+
+def read_folder(folder: str, keep_partial: bool = False) -> list[pd.DataFrame]:
     files = sorted(Path(folder).glob("*.csv"))
     if not files:
         sys.exit(f"No CSV files found in {folder}")
@@ -116,6 +147,11 @@ def read_folder(folder: str) -> list[pd.DataFrame]:
             df = read_export(f)
         except Exception as err:
             sys.exit(f"Could not read {f.name}: {err}")
+        if not keep_partial:
+            trimmed = drop_partial(df, date.today())
+            if len(trimmed) < len(df):
+                print(f"  dropped the week of {df.index[-1].date()}: it is not complete yet")
+            df = trimmed
         print(f"Read {f.name}: {', '.join(df.columns)} ({len(df)} rows)")
         frames.append(df)
     return frames
@@ -127,8 +163,16 @@ def find_column(df: pd.DataFrame, name: str) -> str | None:
     return next((c for c in df.columns if c.lower() == name.lower()), None)
 
 
-def stitch(frames: list[pd.DataFrame], anchor: str) -> pd.DataFrame:
-    """Rescale each batch so its anchor matches the first batch's anchor."""
+def usable(mean: float) -> bool:
+    return pd.notna(mean) and mean > 0
+
+
+def stitch(frames: list[pd.DataFrame], anchor: str, weeks: int = 0) -> pd.DataFrame:
+    """Rescale each batch so its anchor matches the first batch's anchor.
+
+    Keeps the latest `weeks` weeks (0 keeps all), then sets the largest
+    value that is left to 100.
+    """
     for i, df in enumerate(frames, start=1):
         if find_column(df, anchor) is None:
             sys.exit(
@@ -137,29 +181,32 @@ def stitch(frames: list[pd.DataFrame], anchor: str) -> pd.DataFrame:
             )
     base = frames[0]
     base_anchor = base[find_column(base, anchor)]
+    if not usable(base_anchor.mean()):
+        sys.exit(f"The anchor '{anchor}' is all zeros or empty in batch 1. Pick a more popular anchor.")
     combined = base.copy()
     for i, df in enumerate(frames[1:], start=2):
         this_anchor = df[find_column(df, anchor)]
         shared = base_anchor.index.intersection(this_anchor.index)
         if len(shared) == 0:
             sys.exit(f"Batch {i} shares no dates with batch 1. Use the same time range for every batch.")
-        if this_anchor[shared].mean() == 0:
-            sys.exit(f"The anchor '{anchor}' is all zeros in batch {i}. Pick a more popular anchor.")
+        if not usable(this_anchor[shared].mean()) or not usable(base_anchor[shared].mean()):
+            sys.exit(f"The anchor '{anchor}' is all zeros or empty in batch {i}. Pick a more popular anchor.")
         factor = base_anchor[shared].mean() / this_anchor[shared].mean()
         print(f"Batch {i}: scaled by {factor:.3f} to match the anchor")
         for col in df.columns:
             if col.lower() != anchor.lower() and find_column(combined, col) is None:
                 combined[col] = df[col] * factor
-    # Final rescale so the largest value in the whole set is 100, like Google's own scale.
-    peak = combined.max().max()
-    if peak > 0:
-        combined = combined * (100 / peak)
-    return combined.sort_index()
-
-
-def to_long(wide: pd.DataFrame, geo: str, weeks: int) -> pd.DataFrame:
+    combined = combined.sort_index()
     if weeks > 0:
-        wide = wide.tail(weeks)
+        combined = combined.tail(weeks)
+    # Final rescale so the largest value in the weeks kept is 100, like Google's own scale.
+    peak = combined.max().max()
+    if pd.notna(peak) and peak > 0:
+        combined = combined * (100 / peak)
+    return combined
+
+
+def to_long(wide: pd.DataFrame, geo: str) -> pd.DataFrame:
     long = wide.reset_index().melt(id_vars="Week", var_name="Tag", value_name="Interest")
     long = long.dropna(subset=["Interest"])
     long["Week"] = pd.to_datetime(long["Week"]).dt.strftime("%Y-%m-%d")
@@ -177,11 +224,13 @@ def main() -> None:
     ap.add_argument("--timeframe", default="today 5-y", help="live pull only; 5 years gives weekly points")
     ap.add_argument("--weeks", type=int, default=104, help="keep the latest N weeks (0 keeps all)")
     ap.add_argument("--pause", type=float, default=5.0, help="live pull only; seconds between requests")
+    ap.add_argument("--keep-partial", action="store_true",
+                    help="keep the newest week even if it is not complete yet")
     ap.add_argument("--out", default="trends.csv")
     args = ap.parse_args()
 
     if args.from_csv:
-        frames = read_folder(args.from_csv)
+        frames = read_folder(args.from_csv, args.keep_partial)
         anchor = args.anchor
         if not anchor:
             # Use the first tag from the tags file if there is one, else the first exported term.
@@ -189,10 +238,10 @@ def main() -> None:
     else:
         tags = read_tags(args.tags)
         anchor = args.anchor or tags[0]
-        frames = pull_live(tags, anchor, args.geo, args.timeframe, args.pause)
+        frames = pull_live(tags, anchor, args.geo, args.timeframe, args.pause, args.keep_partial)
 
     print(f"Anchor term: {anchor}")
-    result = to_long(stitch(frames, anchor), args.geo, args.weeks)
+    result = to_long(stitch(frames, anchor, args.weeks), args.geo)
     result.to_csv(args.out, index=False)
     print(f"Wrote {args.out}: {result['Tag'].nunique()} tags, "
           f"{result['Week'].nunique()} weeks, {len(result):,} rows")

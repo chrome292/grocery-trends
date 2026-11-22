@@ -14,7 +14,7 @@ checks whether searches lead sales, store readiness, and a pitch list.
 | File | What it is |
 | --- | --- |
 | `trend_radar_sample_data.xlsx` | Six tables Power BI loads by name (Tags, Trends, Products, Stores, Sales, Weeks), plus a README sheet. **All of it is made up**, including the stores, brands and trend curves. |
-| `make_sample_data.py` | Rebuilds the sample workbook. Seeded, so it gives the same file each time. |
+| `make_sample_data.py` | Rebuilds the sample workbook. Seeded and timestamp-free, so it gives the identical file each time. |
 | `pull_trends.py` | Pulls real Google Trends data, or converts CSVs downloaded from the Google Trends site, into the Trends table shape. |
 | `tags.txt` | The search terms the script pulls, one per line. The first one is the anchor. |
 | `trend_radar_measures.dax` | Every measure, in paste order. |
@@ -48,12 +48,28 @@ Google scales each comparison to its own 0–100 range, so the anchor term
 batch until its anchor line matches the first batch's, which puts every tag
 on one scale.
 
+The script drops the newest week when it has not finished yet, because a
+part week reads low and pulls momentum down. Pass `--keep-partial` to keep
+it. It keeps the latest 104 weeks (`--weeks` changes that) and sets the
+largest value among them to 100.
+
+## One thing to know about the sample
+
+Bone broth shows as Rising (+41.7%), but that is seasonality, not a trend.
+Its underlying trend is flat; the data ends in November, on the way up to a
+winter peak. It is in the sample on purpose, to show how a seasonal tag
+fools the momentum measure. Compare a seasonal tag against the same weeks
+last year before pitching it.
+
 ## What has been tested
 
-- `make_sample_data.py` runs and prints the momentum and store distribution
-  for each tag.
+- `make_sample_data.py` runs, prints the momentum and store distribution
+  for each tag, and gives a byte-identical workbook on a second run.
 - The `--from-csv` mode of `pull_trends.py` was checked against exports
   built from known data: it recovered the original values to within
-  rounding.
-- The live pull was **not** tested, and the DAX has **not** been run inside
-  Power BI.
+  rounding. Also checked: an unfinished last week is dropped, an all-zero
+  anchor stops the script with an error and writes nothing, and the kept
+  weeks peak at 100.
+- The retry logic of the live pull was checked with a stand-in for Google
+  that always fails. A real live pull was **not** tested.
+- The DAX has **not** been run inside Power BI.
