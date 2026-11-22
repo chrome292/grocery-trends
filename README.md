@@ -16,6 +16,7 @@ checks whether searches lead sales, store readiness, and a pitch list.
 | `trend_radar_sample_data.xlsx` | Seven tables Power BI loads by name (Tags, Trends, Products, Stores, Sales, Weeks, Geos), plus a README sheet. **All of it is made up**, including the stores, brands and trend curves. |
 | `make_sample_data.py` | Rebuilds the sample workbook. Seeded and timestamp-free, so it gives the identical file each time. |
 | `pull_trends.py` | Pulls real Google Trends data, or converts CSVs downloaded from the Google Trends site, into the Trends table shape. |
+| `check_trends.py` | Checks a `trends.csv` and prints which tags are Rising, Steady or Cooling in each state. Run `python check_trends.py trends.csv`. |
 | `tags.txt` | The search terms the script pulls, one per line. The first one is the anchor. |
 | `trend_radar_measures.dax` | Every measure, in paste order. |
 
