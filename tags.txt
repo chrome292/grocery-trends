@@ -1,0 +1,18 @@
+# Search terms for pull_trends.py, one per line.
+# Each line is the exact phrase typed into Google, and it must match
+# the Tag column in the Tags and Products tables.
+# The first term is the anchor: it goes into every batch so all the
+# batches can be put on one scale. Keep it first, or pass --anchor.
+kombucha
+mushroom coffee
+colostrum
+beef tallow
+matcha
+oat milk
+ashwagandha
+bone broth
+sea moss
+electrolyte powder
+magnesium glycinate
+collagen peptides
+prebiotic soda

@@ -1,0 +1,178 @@
+-- Natural Food Trend Radar: DAX measures
+--
+-- How to use: in Power BI, make an empty table called _Measures
+-- (Home > Enter data > Load). Then for each block below, click
+-- New measure and paste the block. Paste them in this order, because
+-- later measures call earlier ones.
+--
+-- Tables expected: Tags, Trends, Products, Stores, Sales, Weeks.
+-- [Interest (Lagged)] also needs a numeric parameter named "Lag Weeks"
+-- (Modeling > New parameter > Numeric range, 0 to 8 by 1).
+--
+-- NOTE: these have not been run inside Power BI. If one errors, the
+-- message will name the measure.
+
+
+-- ---------- Base measures ----------
+
+Interest = AVERAGE ( Trends[Interest] )
+
+Units = SUM ( Sales[Units] )
+
+Dollars = SUM ( Sales[Dollars] )
+
+-- The newest week in the Weeks table, ignoring any week filter.
+-- Keep the Weeks table ending on the last week that has data.
+Last Week Index = CALCULATE ( MAX ( Weeks[WeekIndex] ), ALL ( Weeks ) )
+
+
+-- ---------- Search momentum ----------
+
+-- Average search interest over the latest 12 weeks.
+Interest L12W =
+VAR LastIdx = [Last Week Index]
+RETURN
+    CALCULATE ( [Interest], FILTER ( ALL ( Weeks ), Weeks[WeekIndex] > LastIdx - 12 ) )
+
+-- Average search interest over the 12 weeks before that.
+Interest P12W =
+VAR LastIdx = [Last Week Index]
+RETURN
+    CALCULATE (
+        [Interest],
+        FILTER (
+            ALL ( Weeks ),
+            Weeks[WeekIndex] > LastIdx - 24 && Weeks[WeekIndex] <= LastIdx - 12
+        )
+    )
+
+-- Format as a percentage.
+Momentum % = DIVIDE ( [Interest L12W] - [Interest P12W], [Interest P12W] )
+
+-- Change the two 0.15 thresholds here to make the bands wider or narrower.
+Momentum Status =
+VAR Mom = [Momentum %]
+RETURN
+    SWITCH (
+        TRUE (),
+        ISBLANK ( Mom ), BLANK (),
+        Mom > 0.15, "Rising",
+        Mom < -0.15, "Cooling",
+        "Steady"
+    )
+
+-- For field-value conditional formatting.
+Status Color =
+SWITCH (
+    [Momentum Status],
+    "Rising", "#2E9E5B",
+    "Cooling", "#D64545",
+    "Steady", "#9AA0A6"
+)
+
+
+-- ---------- Sales ----------
+
+Units L12W =
+VAR LastIdx = [Last Week Index]
+RETURN
+    CALCULATE ( [Units], FILTER ( ALL ( Weeks ), Weeks[WeekIndex] > LastIdx - 12 ) )
+
+Units P12W =
+VAR LastIdx = [Last Week Index]
+RETURN
+    CALCULATE (
+        [Units],
+        FILTER (
+            ALL ( Weeks ),
+            Weeks[WeekIndex] > LastIdx - 24 && Weeks[WeekIndex] <= LastIdx - 12
+        )
+    )
+
+-- Format as a percentage.
+Sales Growth % = DIVIDE ( [Units L12W] - [Units P12W], [Units P12W] )
+
+
+-- ---------- Distribution ----------
+
+-- 1 if the store(s) in context sold any SKU of the tag(s) in context
+-- in the last 12 weeks, else 0.
+Carries Tag = IF ( [Units L12W] > 0, 1, 0 )
+
+Store Count = COUNTROWS ( Stores )
+
+Stores Carrying = COUNTROWS ( FILTER ( Stores, [Carries Tag] = 1 ) ) + 0
+
+-- Format as a percentage.
+Store Distribution % = DIVIDE ( [Stores Carrying], [Store Count] )
+
+
+-- ---------- Store readiness ----------
+
+-- 1 when the tag is Rising and the store does not carry it.
+-- Use as a visual-level filter (Rising Gap = 1) on the pitch list.
+Rising Gap = IF ( [Momentum Status] = "Rising" && [Carries Tag] = 0, 1, 0 )
+
+-- How many tags are Rising. The same for every store, because a
+-- store filter never reaches the Trends table.
+Rising Tags =
+COUNTROWS ( FILTER ( ALL ( Tags[Tag] ), [Momentum Status] = "Rising" ) ) + 0
+
+-- How many of the Rising tags the store in context carries.
+Rising Tags Carried =
+COUNTROWS (
+    FILTER ( ALL ( Tags[Tag] ), [Momentum Status] = "Rising" && [Carries Tag] = 1 )
+) + 0
+
+-- Format as a percentage. Put Stores[Store] on rows.
+Store Readiness % = DIVIDE ( [Rising Tags Carried], [Rising Tags] )
+
+Rising Gaps = [Rising Tags] - [Rising Tags Carried]
+
+
+-- ---------- Pitch list ----------
+
+-- The best-selling product in the tag across ALL stores over the last
+-- 12 weeks. Blank unless exactly one tag is in context.
+Pitch SKU =
+VAR TopProduct =
+    TOPN (
+        1,
+        VALUES ( Products[Product] ),
+        CALCULATE ( [Units L12W], REMOVEFILTERS ( Stores ) ), DESC
+    )
+RETURN
+    IF ( HASONEVALUE ( Tags[Tag] ), MAXX ( TopProduct, Products[Product] ) )
+
+
+-- ---------- Lag analysis ----------
+
+-- Search interest from N weeks earlier, where N is the Lag Weeks slicer.
+-- Plot it against [Units] with Weeks[Week] on the X axis.
+Interest (Lagged) =
+VAR LagN = [Lag Weeks Value]
+VAR ShiftedWeeks =
+    SELECTCOLUMNS ( VALUES ( Weeks[WeekIndex] ), "Idx", Weeks[WeekIndex] - LagN )
+RETURN
+    CALCULATE (
+        [Interest],
+        REMOVEFILTERS ( Weeks ),
+        TREATAS ( ShiftedWeeks, Weeks[WeekIndex] )
+    )
+
+
+-- ---------- Radar labels ----------
+
+-- Matches the constant lines on the scatter chart: X at 0.15, Y at 0.5.
+Radar Quadrant =
+VAR Mom = [Momentum %]
+VAR Dist = [Store Distribution %]
+RETURN
+    SWITCH (
+        TRUE (),
+        ISBLANK ( Mom ), BLANK (),
+        Mom > 0.15 && Dist < 0.5, "Open lane: pitch now",
+        Mom > 0.15, "Ride it",
+        Mom < -0.15 && Dist >= 0.5, "Watch shelf space",
+        "Hold"
+    )
