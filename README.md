@@ -73,9 +73,12 @@ in practice), so small tags are squeezed into values like 0, 1 and 2. Add
 `--solo` to the live pull to fetch each tag on its own as well: the solo
 pull gives the shape over time, the comparison gives the size. It costs one
 extra request per tag per state, so Google is more likely to block the run;
-do one or two states at a time. For manual exports, also download each tag
-by itself into the same folder. Single-term files are picked up
-automatically.
+do one or two states at a time. If Google refuses the solo pulls partway,
+the comparison data already fetched is kept and the script names the tags
+that did not get a solo shape. For manual exports, also download each tag
+by itself into the same folder, with the same location and the same "Past 5
+years" range as the comparisons. Single-term files are picked up
+automatically; one with a shorter range is ignored with a message.
 
 ## Two ways of measuring change
 
@@ -88,7 +91,12 @@ A real pull in November 2026 showed why: almost every tag had fallen over
 the previous 12 weeks in every state at once, which is the season, not 13
 separate declines. Year over year, the same data showed magnesium glycinate
 and matcha growing. `Trend Status` falls back to `Momentum %` only when
-there is less than 64 weeks of search data.
+there is no usable year-ago period: less than 64 weeks of search data, or a
+year-ago average of zero. That rule lives in one measure, `Trend Change %`,
+and `check_trends.py` applies the same one.
+
+On visuals with stores on them, use `Trend Status (Local)` and
+`Status Color (Local)`, not the plain versions.
 
 ## Each store is judged against its own state
 
@@ -98,7 +106,7 @@ The `Geos` table has one row per search region (`Geo`, `State`,
 store in context, so Rising Gap, Store Readiness % and Rising Gaps judge a
 Virginia store on Virginia search. Use `Geos[StateName]` as the state
 slicer: it filters stores and search together. With no state selected, the
-plain `YoY %` and `Momentum %` average the states with equal weight.
+plain `YoY %` and `Momentum %` blend the selected states together. It is a simple average of the rows, so a state with higher interest values counts for more.
 
 When you add a state, add its row to `Geos` and pull its trends. A state
 that has stores but no search data shows no Rising tags for those stores.
@@ -137,6 +145,11 @@ as Steady. That is the difference between the two measures in one row.
 - Solo shapes were checked on exports built from known data: momentum for
   a small tag was closer to the truth with them than without.
 - `check_trends.py` was run on a real five-state pull and on the sample.
+- `tests/test_kit.py` covers the cases a code review raised, on exports
+  with a known answer: a tiny tag recovered by solo files, a solo file with
+  too short a range, a file from the wrong state, one bad state among good
+  ones, Google refusing the solo pulls, and the checker's fallback and
+  coarse-data rules. Run it with `python tests/test_kit.py`.
 - The retry logic of the live pull was checked with a stand-in for Google
   that always fails. A real live pull was **not** tested.
 - The DAX has **not** been run inside Power BI.

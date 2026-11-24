@@ -1,3 +1,4 @@
 __pycache__/
-trends.csv
+trends*.csv
 ~$*.xlsx
+venv/

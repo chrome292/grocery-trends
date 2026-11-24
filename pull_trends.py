@@ -28,8 +28,9 @@ by the most searched term, so a small tag is squeezed into values like 0, 1
 and 2 and its trend is lost. Pulled on its own, the same tag uses the full
 0 to 100 range. Add --solo to the live pull to fetch each tag alone as well.
 For manual exports, also download each tag by itself (one term, no
-comparison) into the same folder; single-term files are detected
-automatically. The solo pull supplies the shape, the comparison the size.
+comparison) into the same folder, with the SAME location and the SAME
+"Past 5 years" range as the comparison exports; single-term files are
+detected automatically, and one with a shorter range is ignored. The solo pull supplies the shape, the comparison the size.
 
 The newest week is dropped when it is not complete yet, because a part
 week reads low and pulls momentum down. Pass --keep-partial to keep it.
@@ -93,7 +94,12 @@ def pull_live(tags: list[str], anchor: str, geo: str, timeframe: str, pause: flo
         labels += [f"Solo {n} of {len(tags)}" for n in range(1, len(tags) + 1)]
 
     frames = []
+    solo_blocked = []
     for label, group in zip(labels, groups):
+        is_solo = solo and len(group) == 1 and label.startswith("Solo")
+        if solo_blocked and is_solo:
+            solo_blocked.append(group[0])  # Google is refusing; don't keep hammering it
+            continue
         print(f"{label}: {', '.join(group)}")
         for attempt in range(1, ATTEMPTS + 1):
             try:
@@ -108,6 +114,10 @@ def pull_live(tags: list[str], anchor: str, geo: str, timeframe: str, pause: flo
                 print(f"  attempt {attempt} failed ({err}); waiting {wait:.0f}s")
                 time.sleep(wait)
         else:
+            if is_solo:
+                # The comparison batches are already in hand; don't throw them away.
+                solo_blocked.append(group[0])
+                continue
             sys.exit(
                 "Google keeps refusing the request (often HTTP 429).\n"
                 "Use Route B: download the CSVs by hand and run with --from-csv."
@@ -126,6 +136,9 @@ def pull_live(tags: list[str], anchor: str, geo: str, timeframe: str, pause: flo
         df.index.name = "Week"
         frames.append(df.astype(float))
         time.sleep(pause)
+    if solo_blocked:
+        print(f"  Google refused the solo pulls for: {', '.join(solo_blocked)}.\n"
+              "  Those tags keep their comparison values. Rerun later with --solo to sharpen them.")
     return frames
 
 
@@ -145,14 +158,18 @@ def read_export(path: Path) -> pd.DataFrame:
     df = df.rename(columns={df.columns[0]: "Week"})
     df["Week"] = pd.to_datetime(df["Week"])
     df = df.set_index("Week")
-    # "kombucha: (Maryland)" -> "kombucha"
+    # "kombucha: (Maryland)" -> "kombucha"; remember the place to catch misfiled exports
+    places = {m.group(1).strip() for c in df.columns if (m := re.search(r":\s*\((.*)\)\s*$", str(c)))}
     df.columns = [re.sub(r":\s*\(.*\)\s*$", "", str(c)).strip() for c in df.columns]
+    df.attrs["places"] = places
+    if df.index.has_duplicates:
+        raise ValueError("the same date appears more than once")
     # Google writes "<1" for tiny values
     df = df.replace({"<1": 0.5}).apply(pd.to_numeric, errors="coerce")
     return df.dropna(how="all")
 
 
-def drop_partial(df: pd.DataFrame, today: date) -> pd.DataFrame:
+def drop_partial(df: pd.DataFrame, today: date) -> pd.DataFrame:  # today = the download date
     """Drop the last week if it had not finished when the file was downloaded.
 
     A week that started less than 7 days ago holds only part of a week's
@@ -168,18 +185,27 @@ def read_folder(folder: str, keep_partial: bool = False) -> list[pd.DataFrame]:
     if not files:
         sys.exit(f"No CSV files found in {folder}")
     frames = []
+    seen_places: dict[str, str] = {}
     for f in files:
         try:
             df = read_export(f)
         except Exception as err:
             sys.exit(f"Could not read {f.name}: {err}")
+        for place in df.attrs.get("places", ()):
+            seen_places.setdefault(place, f.name)
         if not keep_partial:
-            trimmed = drop_partial(df, date.today())
+            # Judge "complete" by when the file was downloaded, not by today.
+            downloaded = date.fromtimestamp(f.stat().st_mtime)
+            trimmed = drop_partial(df, downloaded)
             if len(trimmed) < len(df):
                 print(f"  dropped the week of {df.index[-1].date()}: it is not complete yet")
             df = trimmed
         print(f"Read {f.name}: {', '.join(df.columns)} ({len(df)} rows)")
         frames.append(df)
+    if len(seen_places) > 1:
+        detail = "; ".join(f"{place} (e.g. {name})" for place, name in sorted(seen_places.items()))
+        sys.exit(f"The files in {folder} are for more than one place: {detail}.\n"
+                 "Each region needs its own folder. Move the files that do not belong.")
     return frames
 
 
@@ -193,10 +219,13 @@ def usable(mean: float) -> bool:
     return pd.notna(mean) and mean > 0
 
 
-def split_solos(frames: list[pd.DataFrame]) -> tuple[list[pd.DataFrame], dict[str, pd.Series]]:
+def split_solos(frames: list[pd.DataFrame], anchor: str) -> tuple[list[pd.DataFrame], dict[str, pd.Series]]:
     """Separate comparison batches (several terms) from solo pulls (one term)."""
     batch_frames = [f for f in frames if len(f.columns) > 1]
-    solos = {f.columns[0].lower(): f.iloc[:, 0] for f in frames if len(f.columns) == 1}
+    singles = [f for f in frames if len(f.columns) == 1]
+    if not batch_frames and len(singles) == 1 and singles[0].columns[0].lower() == anchor.lower():
+        return singles, {}  # a tags file with only the anchor in it
+    solos = {f.columns[0].lower(): f.iloc[:, 0] for f in singles}
     if not batch_frames:
         sys.exit("Only single-term files were found. Comparison exports "
                  "(the anchor plus up to 4 tags) are needed to size the tags against each other.")
@@ -217,7 +246,16 @@ def apply_solos(combined: pd.DataFrame, solos: dict[str, pd.Series]) -> pd.DataF
         solo = solos.get(col.lower())
         if solo is None:
             continue
-        shared = combined.index.intersection(solo.index)
+        solo = solo.dropna()
+        missing = combined.index.difference(solo.index)
+        if len(missing):
+            # Reindexing would blank those weeks and silently delete history
+            # (a solo export left on "Past 12 months" loses the year-ago weeks).
+            print(f"  '{col}': solo data covers {len(solo)} weeks but the comparison has "
+                  f"{len(combined)}; solo shape NOT used. Download it with the same "
+                  "location and time range as the comparison exports.")
+            continue
+        shared = combined.index
         level, solo_mean = combined.loc[shared, col].mean(), solo[shared].mean()
         if not usable(solo_mean):
             continue
@@ -275,7 +313,9 @@ def to_long(wide: pd.DataFrame, geo: str) -> pd.DataFrame:
     long = wide.reset_index().melt(id_vars="Week", var_name="Tag", value_name="Interest")
     long = long.dropna(subset=["Interest"])
     long["Week"] = pd.to_datetime(long["Week"]).dt.strftime("%Y-%m-%d")
-    long["Interest"] = long["Interest"].round(1)
+    # Four decimals: on a scale where the biggest tag is 100, one decimal
+    # would squeeze a small tag back into a handful of values.
+    long["Interest"] = long["Interest"].round(4)
     long["Geo"] = geo
     return long[["Week", "Tag", "Interest", "Geo"]]
 
@@ -287,13 +327,14 @@ def run_one(args, geo: str, folder: str | None) -> pd.DataFrame:
         anchor = args.anchor
         if not anchor:
             # Use the first tag from the tags file if there is one, else the first exported term.
-            anchor = read_tags(args.tags)[0] if Path(args.tags).exists() else frames[0].columns[0]
+            multi = [f for f in frames if len(f.columns) > 1] or frames
+            anchor = read_tags(args.tags)[0] if Path(args.tags).exists() else multi[0].columns[0]
     else:
         tags = read_tags(args.tags)
         anchor = args.anchor or tags[0]
         frames = pull_live(tags, anchor, geo, args.timeframe, args.pause, args.keep_partial, args.solo)
     print(f"Anchor term: {anchor}")
-    batch_frames, solos = split_solos(frames)
+    batch_frames, solos = split_solos(frames, anchor)
     return to_long(stitch(batch_frames, anchor, args.weeks, solos), geo)
 
 
@@ -330,7 +371,7 @@ def main() -> None:
             print(f"\n=== {geo} ===")
         try:
             results.append(run_one(args, geo, folder))
-        except SystemExit as stop:
+        except (SystemExit, Exception) as stop:
             if len(geos) == 1:
                 raise
             # One region failing should not throw away the others.

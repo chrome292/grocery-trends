@@ -234,6 +234,7 @@ def build():
 
     # Which stores carry which SKUs. Bigger stores are more likely to carry a tag.
     scale = np.array([SIZE_SCALE[s[2]] for s in STORES])
+    sku_index = {p[0]: n for n, p in enumerate(PRODUCTS)}
     rows = []
     for tag, (_, _, _, n_carry, _) in TAGS.items():
         carriers = rng.choice(N_STORES, size=n_carry, replace=False, p=scale / scale.sum())
@@ -246,9 +247,12 @@ def build():
             curve = curves[geo_of_state[STORES[s][4]]][tag]
             rel = curve / curve[-N_SALES_WEEKS:].mean()
             for sku, _, _, _, price, pop in picked:
+                # Each store and SKU has its own random stream, so changing one
+                # state's search curve cannot shift another state's sales.
+                u_rng = np.random.default_rng([SEED, int(s), sku_index[sku]])
                 for i in range(N_WEEKS - N_SALES_WEEKS, N_WEEKS):
                     lam = scale[s] * pop * rel[i - LAG]
-                    units = int(rng.poisson(lam))
+                    units = int(u_rng.poisson(lam))
                     if units > 0:
                         rows.append({"Week": weeks[i], "StoreID": f"S{s + 1:02d}", "SKU": sku,
                                      "Units": units, "Dollars": round(units * price, 2)})

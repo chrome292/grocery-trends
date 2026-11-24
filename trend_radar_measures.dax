@@ -22,7 +22,9 @@ Units = SUM ( Sales[Units] )
 Dollars = SUM ( Sales[Dollars] )
 
 -- The newest week in the Weeks table, ignoring any week filter. The search
--- windows use this, so keep Weeks ending on the last week of search data.
+-- windows use this, so Weeks must END on the last week of search data (it
+-- may start earlier than the data does). Every region should end on that
+-- same week; pull all states in the same week.
 Last Week Index = CALCULATE ( MAX ( Weeks[WeekIndex] ), ALL ( Weeks ) )
 
 -- The newest week that has any sales, ignoring every filter. The sales
@@ -93,11 +95,20 @@ RETURN
 -- measure compares like with like.
 YoY % = DIVIDE ( [Interest L12W] - [Interest LY12W], [Interest LY12W] )
 
--- The status the radar acts on. It uses the year-over-year change, and
--- falls back to the 12-week momentum when there is not a year of history.
+-- The change the radar acts on: year over year when there is a usable
+-- year-ago period, otherwise the 12-week momentum. "Usable" means at least
+-- 64 weeks in the Weeks table and a year-ago average above zero. This is
+-- the one place that rule lives; check_trends.py applies the same one.
+Trend Change % =
+VAR WeekCount = CALCULATE ( COUNTROWS ( Weeks ), ALL ( Weeks ) )
+VAR LastYear = [Interest LY12W]
+RETURN
+    IF ( WeekCount >= 64 && LastYear > 0, [YoY %], [Momentum %] )
+
+-- The status the radar acts on, from [Trend Change %].
 -- Change the two 0.15 thresholds here to make the bands wider or narrower.
 Trend Status =
-VAR Chg = IF ( ISBLANK ( [Interest LY12W] ), [Momentum %], [YoY %] )
+VAR Chg = [Trend Change %]
 RETURN
     SWITCH (
         TRUE (),
@@ -141,10 +152,22 @@ VAR StoreStates = VALUES ( Stores[State] )
 RETURN
     CALCULATE ( [Trend Status], TREATAS ( StoreStates, Geos[State] ) )
 
--- For field-value conditional formatting.
+-- For field-value conditional formatting on visuals with no store on
+-- them, such as the radar scatter.
 Status Color =
 SWITCH (
     [Trend Status],
+    "Rising", "#2E9E5B",
+    "Cooling", "#D64545",
+    "Steady", "#9AA0A6"
+)
+
+-- The same, for visuals with stores on them (the readiness matrix, the
+-- pitch list). A store filter does not reach Trends, so the plain version
+-- would color every store by the all-states blend.
+Status Color (Local) =
+SWITCH (
+    [Trend Status (Local)],
     "Rising", "#2E9E5B",
     "Cooling", "#D64545",
     "Steady", "#9AA0A6"
@@ -244,9 +267,9 @@ RETURN
 
 -- ---------- Radar labels ----------
 
--- Matches the constant lines on the scatter chart: X ([YoY %]) at 0.15, Y at 0.5.
+-- Matches the constant lines on the scatter chart: X ([Trend Change %]) at 0.15, Y at 0.5.
 Radar Quadrant =
-VAR Mom = IF ( ISBLANK ( [Interest LY12W] ), [Momentum %], [YoY %] )
+VAR Mom = [Trend Change %]
 VAR Dist = [Store Distribution %]
 RETURN
     SWITCH (

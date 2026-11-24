@@ -10,8 +10,9 @@ state, two ways, with the same rules as the Power BI measures:
   12w   last 12 weeks vs. the 12 weeks just before. This moves with the
         seasons, so read it as "what changed lately", not as the trend.
 
-With less than 64 weeks of data there is no year-ago period, and the status
-falls back to the 12-week figure.
+The status falls back to the 12-week figure when there is no usable
+year-ago period: less than 64 weeks of data, or a year-ago average of zero.
+The Power BI measure [Trend Change %] applies the same rule.
 """
 
 from __future__ import annotations
@@ -23,16 +24,28 @@ import pandas as pd
 
 COLUMNS = ["Week", "Tag", "Interest", "Geo"]
 RISING, COOLING = 0.15, -0.15
-LOW_INTEREST = 10  # below this, week-to-week noise swamps the trend
+# A tag is flagged when its recent values are too coarse to read a trend
+# from: mostly zeros, or only a few distinct values (Google's whole-number
+# rounding). Size alone is not the problem, so a small tag pulled with
+# --solo is not flagged.
+MAX_ZERO_SHARE = 0.25
+MIN_DISTINCT = 6
 
 
 def load(path: str) -> pd.DataFrame:
-    df = pd.read_csv(path)
+    try:
+        df = pd.read_csv(path)
+    except FileNotFoundError:
+        sys.exit(f"Cannot find {path}. Run this from the folder that holds it, or give the full path.")
+    except pd.errors.EmptyDataError:
+        sys.exit(f"{path} is empty.")
     missing = [c for c in COLUMNS if c not in df.columns]
     if missing:
         sys.exit(f"{path} is missing the column(s): {', '.join(missing)}")
     df["Week"] = pd.to_datetime(df["Week"])
     df["Interest"] = pd.to_numeric(df["Interest"], errors="coerce")
+    if df.empty:
+        sys.exit(f"{path} has a header but no rows.")
     return df
 
 
@@ -84,8 +97,11 @@ def momentum_table(df: pd.DataFrame) -> pd.DataFrame:
             status = "Cooling"
         else:
             status = "Steady"
+        recent = g[g["Week"].isin(set(weeks[-24:]))]["Interest"]
+        coarse = bool(len(recent) == 0 or (recent == 0).mean() > MAX_ZERO_SHARE
+                      or recent.round(4).nunique() < MIN_DISTINCT)
         rows.append({"Geo": geo, "Tag": tag, "Momentum": mom, "YoY": yoy, "Status": status,
-                     "Level": l12, "Noisy": bool(pd.isna(l12) or l12 < LOW_INTEREST)})
+                     "Level": l12, "Noisy": coarse})
     return pd.DataFrame(rows)
 
 
@@ -121,8 +137,9 @@ def main() -> None:
         for _, r in g.iterrows():
             print(f"  {r['Tag']:<22}{r['Cell']}")
     if table["Noisy"].any():
-        print(f"\n* average interest under {LOW_INTEREST} in the last 12 weeks: too little search "
-              "volume to trust. Pull again with --solo, try a broader term, or a larger region.")
+        print("\n* too coarse to trust: in the last 24 weeks this tag is mostly zeros or takes only a "
+              "few distinct values.\n  If you have not pulled with --solo, do that first. If it is "
+              "still starred, the area has too few searches:\n  try a broader term or a larger region.")
     if table["YoY"].isna().all():
         print("\nNo year-ago period in this file (it needs 64 weeks), so the status uses the "
               "12-week figure, which moves with the seasons.")
